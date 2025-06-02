@@ -1,0 +1,5 @@
+/* Class = "NSTextFieldCell"; title = "Exotic audio:"; ObjectID = "exotic-audio-label-cell"; */
+"exotic-audio-label-cell.title" = "Exotic audio:";
+
+/* Class = "NSButtonCell"; title = "Disable multi-channel tracks by default"; ObjectID = "exotic-audio-checkbox-cell"; */
+"exotic-audio-checkbox-cell.title" = "Disable multi-channel tracks by default"; 
