@@ -164,6 +164,9 @@ enum Prefs {
 
     @Stored(key: "SBLogFormat", defaultValue: 0)
     static var logFormat: Int  // 0 = Time Only, 1 = Date and Time
+
+    @Stored(key: "SBDisableExoticAudio", defaultValue: true)
+    static var disableExoticAudio: Bool
 }
 
 enum MetadataPrefs {
