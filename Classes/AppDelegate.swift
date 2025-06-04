@@ -76,6 +76,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return ActivityWindowController(logger: logger)
     }()
 
+    @MainActor private lazy var galleryWindowController: GalleryWindowController = {
+        return GalleryWindowController.shared
+    }()
+
     @MainActor private lazy var documentController: DocumentController = {
         return DocumentController()
     }()
@@ -157,6 +161,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         _ = documentController
         _ = activityWindowController
+        _ = galleryWindowController
 
         logger.clear()
         MP42File.setGlobalLogger(logger)
@@ -223,6 +228,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @IBAction func showQueueWindow(_ sender: Any) {
         QueueController.shared.showWindow(self)
+    }
+
+    @IBAction func showGalleryWindow(_ sender: Any) {
+        galleryWindowController.showWindow(self)
     }
 
     @IBAction func showPrefsWindow(_ sender: Any) {
