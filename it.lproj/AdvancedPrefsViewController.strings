@@ -115,9 +115,3 @@
 /* Class = "NSButtonCell"; title = "Keep AC-3"; ObjectID = "Zgy-z5-6UG"; */
 "Zgy-z5-6UG.title" = "Mantieni AC-3";
 
-/* Class = "NSTextFieldCell"; title = "Exotic audio:"; ObjectID = "exotic-audio-label-cell"; */
-"exotic-audio-label-cell.title" = "Audio esotico:";
-
-/* Class = "NSButtonCell"; title = "Disable multi-channel tracks by default"; ObjectID = "exotic-audio-checkbox-cell"; */
-"exotic-audio-checkbox-cell.title" = "Disabilita le tracce multicanale per impostazione predefinita";
-

@@ -124,6 +124,10 @@ final class FileImportController: ViewController, NSTableViewDataSource, NSTable
                                                 tag: 6,
                                                 enabled: true)
                     actions.append(conversionAction)
+                    let conversionAction2 = Action(title: NSLocalizedString("AAC + AC3", comment: "File Import action menu item."),
+                                                tag: 7,
+                                                enabled: true)
+                    actions.append(conversionAction2)
                 }
 
                 if (track.format == kMP42AudioCodecType_Opus || track.format == kMP42AudioCodecType_TrueHD) && channelCount > 2 {
@@ -148,7 +152,7 @@ final class FileImportController: ViewController, NSTableViewDataSource, NSTable
                 if audioTrack.fallbackTrack != nil {
                     self.selectedActionTag = 0 // Passthru
                 } else {
-                    self.selectedActionTag = 6 // AAC + Passthru
+                    self.selectedActionTag = 7 // AAC + AC3
                 }
             }
 

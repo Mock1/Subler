@@ -78,7 +78,7 @@ enum Prefs {
                                _audioBitrate, _audioDRC, _audioConvertAC3, _audioKeepAC3, _audioConvertDts,
                                _audioDtsOptions, _subtitleConvertBitmap, _ratingsCountry, _chaptersPreviewPosition,
                                _chaptersPreviewTrack, _mp464bitOffset, _mp464bitTimes, _mp4SaveAsOptimize, _forceHvc1,
-                               _logFormat])
+                               _logFormat, _disableExoticAudio])
     }
 
     @Stored(key: "NSApplicationCrashOnException", defaultValue: true)

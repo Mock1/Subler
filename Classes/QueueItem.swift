@@ -210,7 +210,7 @@ import MP42Foundation
                 track.isEnabled = true
             }
             // Set up the original track with conversion settings
-            let settings = MP42AudioConversionSettings(format: kMP42AudioCodecType_MPEG4AAC, bitRate: bitrate, mixDown: kMP42AudioMixdown_None, drc: drc)
+            let settings = MP42AudioConversionSettings(format: kMP42AudioCodecType_AC3, bitRate: bitrate, mixDown: kMP42AudioMixdown_None, drc: drc)
             track.conversionSettings = settings
         }
         // AC-3 track, we might need to do the aac + ac3 trick.
