@@ -21,6 +21,7 @@ final class MetadataSearchController: NSViewController, NSTableViewDataSource, N
     // MARK: - Movie
     @IBOutlet var movieName: NSTextField!
     @IBOutlet var movieLanguage: NSPopUpButton!
+    @IBOutlet var movieStore: NSPopUpButton!
     @IBOutlet var movieMetadataProvider: NSPopUpButton!
 
     // MARK: - TV Show
@@ -28,6 +29,7 @@ final class MetadataSearchController: NSViewController, NSTableViewDataSource, N
     @IBOutlet var tvSeasonNum: NSTextField!
     @IBOutlet var tvEpisodeNum: NSTextField!
     @IBOutlet var tvLanguage: NSPopUpButton!
+    @IBOutlet var tvStore: NSPopUpButton!
     @IBOutlet var tvMetadataProvider: NSPopUpButton!
 
     @IBOutlet var searchMovieButton: NSButton!
@@ -114,9 +116,24 @@ final class MetadataSearchController: NSViewController, NSTableViewDataSource, N
 
         updateLanguagesMenu(service: movieService, popUpButton: movieLanguage)
         updateLanguagesMenu(service: tvShowService, popUpButton: tvLanguage)
+        
+        updateStoresMenu(service: movieService, popUpButton: movieStore)
+        updateStoresMenu(service: tvShowService, popUpButton: tvStore)
 
         movieMetadataProvider.selectItem(withTitle: movieService.name)
         tvMetadataProvider.selectItem(withTitle: tvShowService.name)
+        
+        // Update language menus based on selected stores
+        updateLanguagesMenuForStore(service: movieService, languageButton: movieLanguage, storeButton: movieStore)
+        updateLanguagesMenuForStore(service: tvShowService, languageButton: tvLanguage, storeButton: tvStore)
+        
+        // Ensure language buttons are enabled if they have items
+        if movieLanguage.numberOfItems > 0 {
+            movieLanguage.isEnabled = true
+        }
+        if tvLanguage.numberOfItems > 0 {
+            tvLanguage.isEnabled = true
+        }
 
         switch terms {
         case .none:
@@ -151,6 +168,54 @@ final class MetadataSearchController: NSViewController, NSTableViewDataSource, N
         if popUpButton.indexOfSelectedItem == -1 {
             popUpButton.selectItem(withTitle: service.languageType.displayName(language: service.defaultLanguage))
         }
+        
+        // Ensure the language button is enabled
+        popUpButton.isEnabled = !service.languages.isEmpty
+    }
+    
+    private func updateStoresMenu(service: MetadataService, popUpButton: NSPopUpButton) {
+        popUpButton.removeAllItems()
+        
+        if service.supportsSeparateStoreAndLanguage, let stores = service.stores {
+            popUpButton.addItems(withTitles: stores)
+            popUpButton.selectItem(withTitle: service.defaultStore ?? stores.first ?? "")
+            popUpButton.isEnabled = true
+        } else {
+            popUpButton.addItem(withTitle: "N/A")
+            popUpButton.isEnabled = false
+        }
+    }
+
+    private func updateLanguagesMenuForStore(service: MetadataService, languageButton: NSPopUpButton, storeButton: NSPopUpButton) {
+        if service.supportsSeparateStoreAndLanguage {
+            let selectedStore = storeButton.titleOfSelectedItem ?? service.defaultStore ?? ""
+            let storeLanguages = service.getLanguages(for: selectedStore)
+            
+            languageButton.removeAllItems()
+            languageButton.addItems(withTitles: storeLanguages)
+            
+            // Enable the language button if we have languages
+            languageButton.isEnabled = !storeLanguages.isEmpty
+            
+            // Try to select a reasonable default language for this store
+            let type: MetadataType = languageButton == movieLanguage ? .movie : .tvShow
+            let defaultLanguage = MetadataSearch.defaultLanguage(service: service, type: type)
+            
+            // If the default language is available in this store, use it
+            if storeLanguages.contains(defaultLanguage) {
+                languageButton.selectItem(withTitle: defaultLanguage)
+            } else {
+                // Otherwise, select the first available language
+                if !storeLanguages.isEmpty {
+                    languageButton.selectItem(at: 0)
+                }
+            }
+        } else {
+            // For services that don't support separate store/language, use the standard method
+            updateLanguagesMenu(service: service, popUpButton: languageButton)
+            // Ensure the language button is enabled for non-store-aware services
+            languageButton.isEnabled = true
+        }
     }
 
     @IBAction func metadataProviderLanguageSelected(_ sender: NSPopUpButton) {
@@ -161,17 +226,32 @@ final class MetadataSearchController: NSViewController, NSTableViewDataSource, N
             MetadataSearch.setDefaultLanguage(title, service: tvShowService, type: .tvShow)
         }
     }
+    
+    @IBAction func metadataProviderStoreSelected(_ sender: NSPopUpButton) {
+        // Update language menu based on selected store
+        if sender == movieStore {
+            updateLanguagesMenuForStore(service: movieService, languageButton: movieLanguage, storeButton: movieStore)
+        } else if sender == tvStore {
+            updateLanguagesMenuForStore(service: tvShowService, languageButton: tvLanguage, storeButton: tvStore)
+        }
+    }
 
     @IBAction func metadataProviderSelected(_ sender: NSPopUpButton) {
         if sender == movieMetadataProvider, let title = movieMetadataProvider.selectedItem?.title {
             movieService = MetadataSearch.service(name: title)
             MetadataSearch.defaultMovieService = movieService
             updateLanguagesMenu(service: movieService, popUpButton: movieLanguage)
+            updateStoresMenu(service: movieService, popUpButton: movieStore)
+            // Update language menu based on selected store
+            updateLanguagesMenuForStore(service: movieService, languageButton: movieLanguage, storeButton: movieStore)
         }
         else if sender == tvMetadataProvider, let title = tvMetadataProvider.selectedItem?.title {
             tvShowService = MetadataSearch.service(name: title)
             MetadataSearch.defaultTVService = tvShowService
             updateLanguagesMenu(service: tvShowService, popUpButton: tvLanguage)
+            updateStoresMenu(service: tvShowService, popUpButton: tvStore)
+            // Update language menu based on selected store
+            updateLanguagesMenuForStore(service: tvShowService, languageButton: tvLanguage, storeButton: tvStore)
         }
     }
 
@@ -243,7 +323,7 @@ final class MetadataSearchController: NSViewController, NSTableViewDataSource, N
 
     private func searchMovie() {
         let title = movieName.stringValue
-        let language = movieService.languageType.extendedTag(displayName: movieLanguage.titleOfSelectedItem ?? "en")
+        let language = getLanguageParameter(service: movieService, languageButton: movieLanguage, storeButton: movieStore)
         let searcher = MetadataSearch.movieSeach(service: movieService, movie: title, language: language)
         let task = searcher.search(completionHandler: { self.searchDone(search: searcher, results: $0) }).runAsync()
         state = .searching(search: searcher, task: task)
@@ -251,12 +331,23 @@ final class MetadataSearchController: NSViewController, NSTableViewDataSource, N
 
     private func searchTVShow() {
         let title = tvSeriesName.stringValue
-        let language = tvShowService.languageType.extendedTag(displayName: tvLanguage.titleOfSelectedItem ?? "en")
+        let language = getLanguageParameter(service: tvShowService, languageButton: tvLanguage, storeButton: tvStore)
         let season = Int(tvSeasonNum.stringValue)
         let episode = Int(tvEpisodeNum.stringValue)
         let searcher = MetadataSearch.tvSearch(service: tvShowService, tvShow: title, season: season, episode: episode, language: language)
         let task = searcher.search(completionHandler: { self.searchDone(search: searcher, results: $0) }).runAsync()
         state = .searching(search: searcher, task: task)
+    }
+
+    private func getLanguageParameter(service: MetadataService, languageButton: NSPopUpButton, storeButton: NSPopUpButton) -> String {
+        if service.supportsSeparateStoreAndLanguage {
+            let store = storeButton.titleOfSelectedItem ?? service.defaultStore ?? ""
+            let language = languageButton.titleOfSelectedItem ?? service.defaultLanguage
+            return "\(store)|\(language)"
+        } else {
+            // For backward compatibility with services that don't support separate store/language
+            return service.languageType.extendedTag(displayName: languageButton.titleOfSelectedItem ?? "en")
+        }
     }
 
     private func cancelSearch() {
@@ -374,8 +465,8 @@ final class MetadataSearchController: NSViewController, NSTableViewDataSource, N
     }
 
     private func disableUI() {
-        toggleUI(items: [tvSeriesName, tvSeasonNum, tvEpisodeNum, tvLanguage, tvMetadataProvider,
-                         movieLanguage, movieMetadataProvider, movieName, addButton,
+        toggleUI(items: [tvSeriesName, tvSeasonNum, tvEpisodeNum, tvLanguage, tvStore, tvMetadataProvider,
+                         movieLanguage, movieStore, movieMetadataProvider, movieName, addButton,
                          searchTvButton, searchMovieButton, resultsTable, metadataTable],
                  state: false)
     }

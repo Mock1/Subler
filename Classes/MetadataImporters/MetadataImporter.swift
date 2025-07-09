@@ -39,6 +39,14 @@ public protocol MetadataService {
 
     var name: String { get }
 
+    // MARK: - Store Support (optional)
+    var stores: [String]? { get }
+    var defaultStore: String? { get }
+    var supportsSeparateStoreAndLanguage: Bool { get }
+    
+    // MARK: - Store-specific language support (optional)
+    func getLanguages(for storeName: String) -> [String]
+
     func search(tvShow: String, language: String) -> [String]
     func search(tvShow: String, language: String, season: Int?, episode: Int?) -> [MetadataResult]
     func loadTVMetadata(_ metadata: MetadataResult, language: String) -> MetadataResult
@@ -46,6 +54,14 @@ public protocol MetadataService {
     func search(movie: String, language: String) -> [MetadataResult]
     func loadMovieMetadata(_ metadata: MetadataResult, language: String) -> MetadataResult
 
+}
+
+// MARK: - Default implementations for backward compatibility
+extension MetadataService {
+    public var stores: [String]? { return nil }
+    public var defaultStore: String? { return nil }
+    public var supportsSeparateStoreAndLanguage: Bool { return false }
+    public func getLanguages(for storeName: String) -> [String] { return languages }
 }
 
 public enum MetadataNameSearch {

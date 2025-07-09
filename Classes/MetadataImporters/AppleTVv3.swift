@@ -617,7 +617,7 @@ public struct AppleTVv3: MetadataService {
         private static func languageDecode(_ code: String) -> String {
             let code = code.split(separator: "_")
             guard code.count == 2 else { return "" }
-            return "\(MP42Languages.defaultManager .localizedLang(forExtendedTag: String(code[0]))) \(String(code[1]))"
+            return "\(MP42Languages.defaultManager.localizedLang(forExtendedTag: String(code[0]))) \(String(code[1]))"
         }
 
         public static func getStorefront(from country: String) -> (Int, String)? {
@@ -632,28 +632,121 @@ public struct AppleTVv3: MetadataService {
 
     public var languageType: LanguageType { return .custom }
 
-    public var languages: [String] {
+    // MARK: - Store and Language Support
+    
+    public var stores: [String]? {
         get {
-            guard let results = Storefront.storefronts?.data
-                .compactMap({ Storefront.language(from: $0.key, countryLanguages: $0.value.localesSupported) })
-                .flatMap({ $0 })
-                .sorted() else { return [] }
-            return results
+            guard let storefronts = Storefront.storefronts?.data else { return [] }
+            return storefronts.keys.compactMap { Storefront.getCountryName($0) }.sorted()
         }
     }
+    
+    public var languages: [String] {
+        get {
+            // Get all unique languages from all storefronts (for backward compatibility)
+            guard let storefronts = Storefront.storefronts?.data else { return [] }
+            let allLanguages = storefronts.values.flatMap { $0.localesSupported }
+            let uniqueLanguages = Set(allLanguages).sorted()
+            return uniqueLanguages.map { languageCode in
+                let parts = languageCode.split(separator: "_")
+                if parts.count == 2 {
+                    let language = String(parts[0])
+                    let region = String(parts[1])
+                    return "\(MP42Languages.defaultManager.localizedLang(forExtendedTag: language)) (\(region))"
+                }
+                return languageCode
+            }
+        }
+    }
+    
+    // MARK: - Store-specific language support
+    
+    public func getLanguages(for storeName: String) -> [String] {
+        guard let storefronts = Storefront.storefronts?.data else { 
+            return [] 
+        }
+        
+        // Find the store by name
+        guard let storeEntry = storefronts.first(where: { Storefront.getCountryName($0.key) == storeName }) else {
+            return []
+        }
+        
+        // Get languages supported by this specific store
+        return storeEntry.value.localesSupported.map { languageCode in
+            let parts = languageCode.split(separator: "_")
+            if parts.count == 2 {
+                let language = String(parts[0])
+                let region = String(parts[1])
+                return "\(MP42Languages.defaultManager.localizedLang(forExtendedTag: language)) (\(region))"
+            }
+            return languageCode
+        }.sorted()
+    }
 
-    public var defaultLanguage: String { get { return Storefront.language(from: AppleTVv3.DefaultCountry, countryLanguages: [AppleTVv3.DefaultLanguageCode]).first ?? "Unknown" } }
+    public var defaultStore: String? { 
+        return Storefront.getCountryName(AppleTVv3.DefaultCountry) ?? "Unknown" 
+    }
+    
+    public var defaultLanguage: String { 
+        return "English (US)" 
+    }
+    
+    public var supportsSeparateStoreAndLanguage: Bool { 
+        return true 
+    }
 
     public var name: String { return AppleTVv3.AppleTVAPI }
+
+    // MARK: - Helper methods for store/language conversion
+    
+    private func getStorefrontId(for storeName: String) -> Int? {
+        guard let storefronts = Storefront.storefronts?.data else { return nil }
+        return storefronts.first { Storefront.getCountryName($0.key) == storeName }?.value.storefrontId
+    }
+    
+    private func getLanguageCode(for languageDisplayName: String) -> String? {
+        // Parse display name like "English (US)" back to language code like "en_US"
+        let parts = languageDisplayName.components(separatedBy: " (")
+        guard parts.count == 2 else { return nil }
+        
+        let languageName = parts[0]
+        let region = String(parts[1].dropLast()) // Remove closing parenthesis
+        
+        // Get the language code from the display name
+        let languageCode = MP42Languages.defaultManager.extendedTag(forLocalizedLang: languageName)
+        return "\(languageCode)_\(region)"
+    }
+    
+    private func configureURL(store: String, language: String) {
+        guard let storefrontId = getStorefrontId(for: store),
+              let languageCode = getLanguageCode(for: language) else {
+            // Fall back to default configuration
+            urlConfiguration(storefront: Storefront.storefronts?.data[AppleTVv3.DefaultCountry]?.storefrontId ?? 143441, 
+                           language: AppleTVv3.DefaultLanguageCode)
+            return
+        }
+        
+        urlConfiguration(storefront: storefrontId, language: languageCode)
+    }
 
     public func search(tvShow: String, language: String) -> [String] {
         return []
     }
 
     public func search(tvShow: String, language: String, season: Int?, episode: Int?) -> [MetadataResult] {
-
+        // For backward compatibility, try to parse the old format first
         if let storefront = Storefront.getStorefront(from: language) {
             urlConfiguration(storefront: storefront.0, language: storefront.1)
+        } else {
+            // New format: language should be in format "Store|Language"
+            let components = language.components(separatedBy: "|")
+            if components.count == 2 {
+                configureURL(store: components[0], language: components[1])
+            } else {
+                // Fall back to default
+                urlConfiguration(storefront: Storefront.storefronts?.data[AppleTVv3.DefaultCountry]?.storefrontId ?? 143441, 
+                               language: AppleTVv3.DefaultLanguageCode)
+            }
         }
 
         let results = search(term: tvShow, filter: .tvshows)
@@ -671,9 +764,19 @@ public struct AppleTVv3: MetadataService {
     }
 
     public func search(movie: String, language: String) -> [MetadataResult] {
-
+        // For backward compatibility, try to parse the old format first
         if let storefront = Storefront.getStorefront(from: language) {
             urlConfiguration(storefront: storefront.0, language: storefront.1)
+        } else {
+            // New format: language should be in format "Store|Language"
+            let components = language.components(separatedBy: "|")
+            if components.count == 2 {
+                configureURL(store: components[0], language: components[1])
+            } else {
+                // Fall back to default
+                urlConfiguration(storefront: Storefront.storefronts?.data[AppleTVv3.DefaultCountry]?.storefrontId ?? 143441, 
+                               language: AppleTVv3.DefaultLanguageCode)
+            }
         }
 
         return search(term: movie, filter: .movies).map { MetadataResult(item: $0) }

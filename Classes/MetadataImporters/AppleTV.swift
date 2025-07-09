@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import MP42Foundation
 
 private let formatter = { () -> DateFormatter in
     let gmt =  TimeZone(secondsFromGMT: 0)
@@ -14,6 +15,35 @@ private let formatter = { () -> DateFormatter in
     formatter.timeZone = gmt
     return formatter
 }()
+
+// MARK: - Storefront Data Structure
+
+private struct Storefront: Codable {
+    let data: [String: StorefrontDetail]
+}
+
+private struct StorefrontDetail: Codable {
+    let storefrontId: Int
+    let localesSupported: [String]
+}
+
+private extension Storefront {
+    static let storefronts: Storefront? = {
+        guard let url = Bundle.main.url(forResource: "Storefronts", withExtension: "json"),
+              let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(Storefront.self, from: data)
+    }()
+    
+    static func getCountryName(_ countryCode: String) -> String {
+        // Load country names from Alpha2.json (not localized)
+        guard let url = Bundle.main.url(forResource: "Alpha2", withExtension: "json"),
+              let data = try? Data(contentsOf: url),
+              let countryNames = try? JSONDecoder().decode([String: String].self, from: data) else {
+            return countryCode
+        }
+        return countryNames[countryCode] ?? countryCode
+    }
+}
 
 private extension MetadataResult {
     convenience init(item: AppleTV.Item, store: iTunesStore.Store) {
@@ -126,6 +156,88 @@ public struct AppleTV: MetadataService {
         return "Apple TV"
     }
 
+    // MARK: - Store and Language Support
+    
+    public var stores: [String]? {
+        get {
+            guard let storefronts = Storefront.storefronts?.data else { return [] }
+            return storefronts.keys.compactMap { Storefront.getCountryName($0) }.sorted()
+        }
+    }
+    
+    public var supportsSeparateStoreAndLanguage: Bool { return true }
+    
+    public var defaultStore: String? { return "United States of America" }
+    
+    public func getLanguages(for storeName: String) -> [String] {
+        guard let storefronts = Storefront.storefronts?.data else { return [] }
+        
+        // Find the store by name
+        guard let storeEntry = storefronts.first(where: { Storefront.getCountryName($0.key) == storeName }) else {
+            return []
+        }
+        
+        // Get languages supported by this specific store
+        return storeEntry.value.localesSupported.map { localeCode in
+            let parts = localeCode.split(separator: "_")
+            if parts.count == 2 {
+                let language = String(parts[0])
+                let region = String(parts[1])
+                return "\(MP42Languages.defaultManager.localizedLang(forExtendedTag: language)) (\(region))"
+            }
+            return localeCode
+        }.sorted()
+    }
+
+    // MARK: - Helper methods for store/language separation
+    
+    private func getStorefrontData(storeName: String, languageName: String) -> (storefrontId: Int, locale: String)? {
+        guard let storefronts = Storefront.storefronts?.data else { return nil }
+        
+        // Find the store by name
+        guard let storeEntry = storefronts.first(where: { Storefront.getCountryName($0.key) == storeName }) else {
+            return nil
+        }
+        
+        // Find the locale code for the selected language
+        guard let localeCode = storeEntry.value.localesSupported.first(where: { localeCode in
+            let parts = localeCode.split(separator: "_")
+            if parts.count == 2 {
+                let language = String(parts[0])
+                let region = String(parts[1])
+                let decodedLanguage = "\(MP42Languages.defaultManager.localizedLang(forExtendedTag: language)) (\(region))"
+                return decodedLanguage == languageName
+            }
+            return localeCode == languageName
+        }) else {
+            return nil
+        }
+        
+        return (storefrontId: storeEntry.value.storefrontId, locale: localeCode)
+    }
+    
+    private func createDummyStore(storefrontId: Int, locale: String) -> iTunesStore.Store {
+        // Create a dummy store for the new format
+        // This is a workaround since MetadataResult requires iTunesStore.Store
+        return iTunesStore.Store(language: "Dummy (\(locale))") ?? iTunesStore.Store(language: "USA (English)")!
+    }
+
+    private func createStoreFromLanguage(language: String) -> iTunesStore.Store? {
+        if supportsSeparateStoreAndLanguage && language.contains("|") {
+            // New format: "store|language"
+            let components = language.split(separator: "|")
+            if components.count == 2 {
+                let storeName = String(components[0])
+                let languageName = String(components[1])
+                guard let storefrontData = getStorefrontData(storeName: storeName, languageName: languageName) else { return nil }
+                return createDummyStore(storefrontId: storefrontData.storefrontId, locale: storefrontData.locale)
+            }
+        }
+        
+        // Fallback to old format for backward compatibility
+        return iTunesStore.Store(language: language)
+    }
+
     private let searchURL = "https://uts-api.itunes.apple.com/uts/v2/search/incremental?"
     private let detailsURL = "https://uts-api.itunes.apple.com/uts/v2/view/product/"
     private let episodesURL = "https://uts-api.itunes.apple.com/uts/v2/view/show/"
@@ -154,9 +266,8 @@ public struct AppleTV: MetadataService {
         }
     }
 
-    private func loadDetails(_ metadata: MetadataResult, language: String) -> MetadataResult {
-        guard let store = iTunesStore.Store(language: language),
-            let id = metadata[.serviceSeriesID] as? String,
+    private func loadDetails(_ metadata: MetadataResult, store: iTunesStore.Store) -> MetadataResult {
+        guard let id = metadata[.serviceSeriesID] as? String,
             let details = fetchMovieDetails(id: id, store: store) else { return metadata }
 
         metadata.insert(contentOf: details, store: store)
@@ -168,16 +279,73 @@ public struct AppleTV: MetadataService {
 
         return metadata
     }
+    
+    private func loadDetails(_ metadata: MetadataResult, storefrontId: Int, locale: String) -> MetadataResult {
+        guard let id = metadata[.serviceSeriesID] as? String,
+            let details = fetchMovieDetails(id: id, storefrontId: storefrontId, locale: locale) else { return metadata }
+
+        let dummyStore = createDummyStore(storefrontId: storefrontId, locale: locale)
+        metadata.insert(contentOf: details, store: dummyStore)
+
+        if let season = metadata[.season] as? Int {
+            let index = metadata.remoteArtworks.count > 1 ? 1 : 0
+            metadata.remoteArtworks.insert(contentsOf: searchSeasons(id: id, season: season, storefrontId: storefrontId, locale: locale), at: index)
+        }
+
+        return metadata
+    }
 
     // MARK: - TV Series search
 
     public func search(tvShow: String, language: String) -> [String] {
-        guard let store = iTunesStore.Store(language: language) else { return [] }
+        if supportsSeparateStoreAndLanguage && language.contains("|") {
+            // New format: "store|language"
+            let components = language.split(separator: "|")
+            if components.count == 2 {
+                let storeName = String(components[0])
+                let languageName = String(components[1])
+                guard let storefrontData = getStorefrontData(storeName: storeName, languageName: languageName) else { return [] }
+                return search(term: tvShow, storefrontId: storefrontData.storefrontId, locale: storefrontData.locale, type: .tvShow(season: nil)).compactMap { $0.title }
+            }
+        }
+        
+        // Fallback to old format for backward compatibility
+        let store = createStoreFromLanguage(language: language)
+        guard let store = store else { return [] }
         return search(term: tvShow, store: store, type: .tvShow(season: nil)).compactMap { $0.title }
     }
 
     public func search(tvShow: String, language: String, season: Int?, episode: Int?) -> [MetadataResult] {
-        guard let store = iTunesStore.Store(language: language) else { return [] }
+        if supportsSeparateStoreAndLanguage && language.contains("|") {
+            // New format: "store|language"
+            let components = language.split(separator: "|")
+            if components.count == 2 {
+                let storeName = String(components[0])
+                let languageName = String(components[1])
+                guard let storefrontData = getStorefrontData(storeName: storeName, languageName: languageName) else { return [] }
+                
+                let tvShows = search(term: tvShow, storefrontId: storefrontData.storefrontId, locale: storefrontData.locale, type: .tvShow(season: nil))
+                
+                if let tvShow = tvShows.match(title: tvShow) {
+                    let seasons = fetchSeasons(id: tvShow.id, storefrontId: storefrontData.storefrontId, locale: storefrontData.locale)
+                    let seasonIndex = seasons.firstIndex(where: {$0.seasonNumber == season}) ?? -1
+                    if seasons.count >= seasonIndex, seasonIndex > -1 {
+                        let startIndex = seasons[0 ..< seasonIndex].map { $0.episodeCount }.reduce(0, +)
+                        let length = seasons[seasonIndex].episodeCount
+                        let episodes = fetchEpisodes(id: tvShow.id, storefrontId: storefrontData.storefrontId, locale: storefrontData.locale, range: (startIndex, length))
+                            .filter { episode != nil ? $0.episodeNumber == episode : true }
+                        let dummyStore = createDummyStore(storefrontId: storefrontData.storefrontId, locale: storefrontData.locale)
+                        let results = episodes.map { MetadataResult(item: tvShow, episode: $0, store: dummyStore) }
+                        return results
+                    }
+                }
+                return []
+            }
+        }
+        
+        // Fallback to old format for backward compatibility
+        let store = createStoreFromLanguage(language: language)
+        guard let store = store else { return [] }
 
         let tvShows = search(term: tvShow, store: store, type: .tvShow(season: nil))
 
@@ -198,13 +366,44 @@ public struct AppleTV: MetadataService {
     }
 
     public func loadTVMetadata(_ metadata: MetadataResult, language: String) -> MetadataResult {
-        return loadDetails(metadata, language: language)
+        if supportsSeparateStoreAndLanguage && language.contains("|") {
+            // New format: "store|language"
+            let components = language.split(separator: "|")
+            if components.count == 2 {
+                let storeName = String(components[0])
+                let languageName = String(components[1])
+                guard let storefrontData = getStorefrontData(storeName: storeName, languageName: languageName) else { return metadata }
+                return loadDetails(metadata, storefrontId: storefrontData.storefrontId, locale: storefrontData.locale)
+            }
+        }
+        
+        // Fallback to old format for backward compatibility
+        let store = createStoreFromLanguage(language: language)
+        guard let store = store else { return metadata }
+        return loadDetails(metadata, store: store)
     }
 
     // MARK: - Movie search
 
     public func search(movie: String, language: String) -> [MetadataResult] {
-        guard let store = iTunesStore.Store(language: language) else { return [] }
+        if supportsSeparateStoreAndLanguage && language.contains("|") {
+            // New format: "store|language"
+            let components = language.split(separator: "|")
+            if components.count == 2 {
+                let storeName = String(components[0])
+                let languageName = String(components[1])
+                guard let storefrontData = getStorefrontData(storeName: storeName, languageName: languageName) else { return [] }
+                
+                let items = search(term: movie, storefrontId: storefrontData.storefrontId, locale: storefrontData.locale)
+                let dummyStore = createDummyStore(storefrontId: storefrontData.storefrontId, locale: storefrontData.locale)
+                let results = items.map { MetadataResult(item: $0, store: dummyStore) }
+                return results
+            }
+        }
+        
+        // Fallback to old format for backward compatibility
+        let store = createStoreFromLanguage(language: language)
+        guard let store = store else { return [] }
 
         let items = search(term: movie, store: store)
         let results = items.map { MetadataResult(item: $0, store: store) }
@@ -212,7 +411,21 @@ public struct AppleTV: MetadataService {
     }
 
     public func loadMovieMetadata(_ metadata: MetadataResult, language: String) -> MetadataResult {
-        return loadDetails(metadata, language: language)
+        if supportsSeparateStoreAndLanguage && language.contains("|") {
+            // New format: "store|language"
+            let components = language.split(separator: "|")
+            if components.count == 2 {
+                let storeName = String(components[0])
+                let languageName = String(components[1])
+                guard let storefrontData = getStorefrontData(storeName: storeName, languageName: languageName) else { return metadata }
+                return loadDetails(metadata, storefrontId: storefrontData.storefrontId, locale: storefrontData.locale)
+            }
+        }
+        
+        // Fallback to old format for backward compatibility
+        let store = createStoreFromLanguage(language: language)
+        guard let store = store else { return metadata }
+        return loadDetails(metadata, store: store)
     }
 
     // MARK: - Artworks search
@@ -560,6 +773,56 @@ public struct AppleTV: MetadataService {
         let availableChannels: [Channel]?
         let episodes: [Episode]
         let seasonSummaries: [SeasonSummary]?
+    }
+
+    // MARK: - New search methods using storefrontId and locale
+    
+    private func search(term: String, storefrontId: Int, locale: String, type: MediaType = .movie) -> [Item] {
+        if let url = URL(string: "\(searchURL)&sf=\(storefrontId)&locale=\(locale)\(options)&q=\(term.urlEncoded())"),
+            let results = sendJSONRequest(url: url, type: Wrapper<Results>.self) {
+
+            let filteredItems = results.data.canvas?.shelves
+                .flatMap { $0.items }
+                .filter { $0.type == type.description }
+
+            return filteredItems ?? []
+        }
+        return []
+    }
+    
+    private func searchSeasons(id: String, season: Int, storefrontId: Int, locale: String) -> [Artwork] {
+        let urlString = "\(seasonsURL)\(id)/itunesSeasons?sf=\(storefrontId)&locale=\(locale)\(options)"
+        if let url = URL(string: urlString), let results = sendJSONRequest(url: url, type: Wrapper<Seasons>.self) {
+            let filteredResults = results.data.seasons.values.joined().filter { $0.seasonNumber == season }
+            return filteredResults.compactMap { $0.images.coverArt16X9?.artwork(type: .season) }
+        }
+        return []
+    }
+    
+    private func fetchMovieDetails(id: String, storefrontId: Int, locale: String) -> ShowDetails? {
+        if let url = URL(string: "\(detailsURL)\(id)?&sf=\(storefrontId)&locale=\(locale)\(options)"),
+            let results = sendJSONRequest(url: url, type: Wrapper<ShowDetails>.self) {
+            return results.data
+        }
+        return nil
+    }
+    
+    private func fetchSeasons(id: String, storefrontId: Int, locale: String) -> [(seasonNumber: Int, episodeCount: Int)] {
+        if let url = URL(string: "\(episodesURL)\(id)/episodes?sf=\(storefrontId)&locale=\(locale)\(options)"),
+            let results = sendJSONRequest(url: url, type: Wrapper<Episodes>.self) {
+            let availableSeasons = Set(results.data.availableChannels?.flatMap { $0.seasonNumbers } ?? []).sorted()
+            let seasonsEpisodeCount = results.data.seasonSummaries?.compactMap { $0.episodeCount } ?? []
+            return zip(availableSeasons, seasonsEpisodeCount).map { (seasonNumber: $0, episodeCount: $1)}
+        }
+        return []
+    }
+    
+    private func fetchEpisodes(id: String, storefrontId: Int, locale: String, range: (start: Int, length: Int)) -> [Episode] {
+        if let url = URL(string: "\(episodesURL)\(id)/episodes?skip=\(range.start)&count=\(range.length)&sf=\(storefrontId)&locale=\(locale)\(options)"),
+            let results = sendJSONRequest(url: url, type: Wrapper<Episodes>.self) {
+            return results.data.episodes
+        }
+        return []
     }
 
 }
