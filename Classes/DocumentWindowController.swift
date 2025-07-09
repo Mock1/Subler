@@ -8,7 +8,7 @@
 import Cocoa
 import MP42Foundation
 
-final class DocumentWindowController: NSWindowController, TracksViewControllerDelegate, MetadataSearchViewControllerDelegate, FileImportControllerDelegate, ProgressViewControllerDelegate, NSDraggingDestination, NSUserInterfaceValidations {
+final class DocumentWindowController: NSWindowController, TracksViewControllerDelegate, MetadataSearchViewControllerDelegate, FileImportControllerDelegate, ProgressViewControllerDelegate, NSDraggingDestination, NSUserInterfaceValidations, ChapterSearchControllerDelegate {
 
     private var doc: Document {
         return document as! Document
@@ -223,6 +223,7 @@ final class DocumentWindowController: NSWindowController, TracksViewControllerDe
         case #selector(selectFile(_:)),
              #selector(selectMetadataFile(_:)),
              #selector(searchMetadata(_:)),
+             #selector(searchForChapters(_:)),
              #selector(addChaptersEvery(_:)),
              #selector(iTunesFriendlyTrackGroups(_:)),
              #selector(clearTrackNames(_:)),
@@ -320,6 +321,39 @@ final class DocumentWindowController: NSWindowController, TracksViewControllerDe
         tracksViewController.reloadData()
     }
 
+    @IBAction func searchForChapters(_ sender: Any?) {
+        // Get the title from the file name or metadata using the same logic as metadata search
+        print("DocumentWindowController: searchForChapters - doc.fileURL: \(doc.fileURL?.absoluteString ?? "nil")")
+        
+        // Try to get title from metadata first
+        let metadataTitle = mp4.metadata.metadataItemsFiltered(byIdentifier: MP42MetadataKeyName).first?.stringValue
+        print("DocumentWindowController: searchForChapters - metadata title: \(metadataTitle ?? "nil")")
+        
+        // Use the same logic as extractSearchTerms to get parsed filename
+        let searchTerms = mp4.extractSearchTerms(fallbackURL: doc.fileURL)
+        print("DocumentWindowController: searchForChapters - extracted search terms: \(searchTerms)")
+        
+        let title: String
+        switch searchTerms {
+        case .movie(let movieTitle):
+            title = movieTitle
+            print("DocumentWindowController: searchForChapters - using parsed movie title: '\(title)'")
+        case .tvShow(let seriesName, _, _):
+            title = seriesName
+            print("DocumentWindowController: searchForChapters - using parsed TV series name: '\(title)'")
+        case .none:
+            // Fallback to metadata title or raw filename
+            title = metadataTitle ?? doc.fileURL?.deletingPathExtension().lastPathComponent ?? "Unknown"
+            print("DocumentWindowController: searchForChapters - using fallback title: '\(title)'")
+        }
+        
+        let duration = UInt64(mp4.duration)
+        print("DocumentWindowController: searchForChapters - duration: \(duration)")
+        
+        let controller = ChapterSearchController(delegate: self, title: title, duration: duration)
+        self.contentViewController?.presentAsSheet(controller)
+    }
+
     @IBAction func iTunesFriendlyTrackGroups(_ sender: Any) {
         mp4.organizeAlternateGroups()
         mp4.inferTracksLanguages()
@@ -412,6 +446,32 @@ final class DocumentWindowController: NSWindowController, TracksViewControllerDe
         }
         doc.updateChangeCount(.changeDone)
         metadataViewController?.metadata = mp4.metadata
+    }
+
+    // MARK: Chapter Search
+
+    func didSelect(chapters: [MP42TextSample]) {
+        // Remove existing chapter track if it exists
+        if let existingChapterTrack = mp4.chapters {
+            mp4.removeTracks([existingChapterTrack])
+        }
+        
+        // Create new chapter track
+        let track = MP42ChapterTrack()
+        mp4.addTrack(track)
+        
+        // Add new chapters
+        for chapter in chapters {
+            track.addChapter(chapter.title, duration: chapter.timestamp)
+        }
+        
+        doc.updateChangeCount(.changeDone)
+        tracksViewController.reloadData()
+        
+        // Update the chapter view controller if it exists
+        if let chapterViewController = chapterViewController {
+            chapterViewController.track = track
+        }
     }
 
     // MARK: File import

@@ -35,16 +35,23 @@ final class ChapterSearchController: ViewController, NSTableViewDataSource, NSTa
     private let duration: UInt64
     private let searchTerm: String
     private var state: ChapterSearchState
+    private var loadedChapters: [UInt64: [Chapter]] = [:] // Track loaded chapters by result ID
+    private let scraper = ChapterDBWebScraper() // Keep reference to scraper for lazy loading
 
     init(delegate: ChapterSearchControllerDelegate, title: String, duration: UInt64) {
+        print("ChapterSearchController: init called with title: '\(title)', duration: \(duration)")
+        
         let info = title.parsedAsFilename()
+        print("ChapterSearchController: parsed filename info: \(info)")
 
         switch info {
 
         case .movie(let title):
             searchTerm = title
+            print("ChapterSearchController: extracted movie title: '\(title)'")
         case .tvShow, .none:
             searchTerm = title
+            print("ChapterSearchController: using original title: '\(title)'")
         }
 
         self.delegate = delegate
@@ -74,6 +81,7 @@ final class ChapterSearchController: ViewController, NSTableViewDataSource, NSTa
     override func viewDidLoad() {
         super.viewDidLoad()
 
+        print("ChapterSearchController: viewDidLoad - setting searchTitle to: '\(searchTerm)'")
         self.searchTitle.stringValue = searchTerm
         self.view.window?.makeFirstResponder(self.searchTitle)
 
@@ -86,6 +94,9 @@ final class ChapterSearchController: ViewController, NSTableViewDataSource, NSTa
         DispatchQueue.main.async {
             if let first = results.first {
                 self.state = .completed(results: results, selectedResult: first)
+                
+                // Load chapters for the first result immediately
+                self.loadChaptersForResult(first)
             }
             else {
                 self.state = .none
@@ -95,15 +106,25 @@ final class ChapterSearchController: ViewController, NSTableViewDataSource, NSTa
     }
 
     @IBAction func searchForResults(_ sender: Any) {
+        print("ChapterSearchController: searchForResults called with title: \(searchTitle.stringValue), duration: \(duration)")
+        
         switch state {
         case .none, .completed:
             break
         case .searching(let task):
             task.cancel()
         }
-
-        let task = ChapterSearch.movieSeach(service: ChapterDB(), title: searchTitle.stringValue, duration: duration)
+        
+        let task = ChapterSearch.movieSeach(service: scraper, title: searchTitle.stringValue, duration: duration)
                                 .search(completionHandler: searchDone).runAsync()
+        print("ChapterSearchController: Created task with service type: \(type(of: scraper))")
+        
+        // Test the scraper directly
+        print("ChapterSearchController: Testing scraper directly...")
+        print("ChapterSearchController: scraper type: \(type(of: scraper))")
+        let testResults = scraper.search(title: searchTitle.stringValue, duration: duration)
+        print("ChapterSearchController: Direct test returned \(testResults.count) results")
+        
         state = .searching(task: task)
         updateUI()
     }
@@ -111,8 +132,13 @@ final class ChapterSearchController: ViewController, NSTableViewDataSource, NSTa
     @IBAction func addChapter(_ sender: Any) {
         switch state {
         case .completed(_, let result):
+            guard let chapters = loadedChapters[result.id] else {
+                print("ChapterSearchController: No chapters loaded for result ID: \(result.id)")
+                return
+            }
+            
             var textChapters: [MP42TextSample] = []
-            for chapter in result.chapters {
+            for chapter in chapters {
                 let sample = MP42TextSample()
                 sample.timestamp = chapter.timestamp
                 sample.title = chapter.name
@@ -199,7 +225,15 @@ final class ChapterSearchController: ViewController, NSTableViewDataSource, NSTa
             case .none, .searching:
                 break
             case .completed(let results, _):
-                state = .completed(results: results, selectedResult: results[resultsTable.selectedRow])
+                let selectedRow = resultsTable.selectedRow
+                guard selectedRow >= 0 && selectedRow < results.count else { return }
+                
+                let selectedResult = results[selectedRow]
+                state = .completed(results: results, selectedResult: selectedResult)
+                
+                // Load chapters for the selected result if not already loaded
+                loadChaptersForResult(selectedResult)
+                
                 chapterTable.reloadData()
             }
         }
@@ -217,7 +251,13 @@ final class ChapterSearchController: ViewController, NSTableViewDataSource, NSTa
         else if tableView == chapterTable {
             switch state {
             case .completed(_, let result):
-                return result.chapters.count
+                // Check if chapters are loaded for this result
+                if let chapters = loadedChapters[result.id] {
+                    return chapters.count
+                } else {
+                    // Chapters not loaded yet, return 0
+                    return 0
+                }
             default:
                 break
             }
@@ -266,7 +306,13 @@ final class ChapterSearchController: ViewController, NSTableViewDataSource, NSTa
         else if tableView == chapterTable {
             switch state {
             case .completed(_, let result):
-                let chapter = result.chapters[row]
+                // Get chapters from loaded dictionary
+                guard let chapters = loadedChapters[result.id],
+                      row < chapters.count else {
+                    return nil
+                }
+                
+                let chapter = chapters[row]
                 if tableColumn?.identifier.rawValue == "time" {
                     let cell = tableView.makeView(withIdentifier: timeCell, owner:self) as? NSTableCellView
                     cell?.textField?.attributedStringValue = StringFromTime(Int64(chapter.timestamp), 1000).boldMonospacedAttributedString()
@@ -282,6 +328,49 @@ final class ChapterSearchController: ViewController, NSTableViewDataSource, NSTa
             }
         }
         return nil
+    }
+
+    // MARK: - Lazy Loading
+    
+    private func loadChaptersForResult(_ result: ChapterResult) {
+        // Check if chapters are already loaded
+        if loadedChapters[result.id] != nil {
+            print("ChapterSearchController: Chapters already loaded for result ID: \(result.id)")
+            return
+        }
+        
+        print("ChapterSearchController: Loading chapters for result ID: \(result.id)")
+        
+        // Show loading state
+        progressText.stringValue = NSLocalizedString("Loading chapters…", comment: "ChapterDB")
+        progressText.isHidden = false
+        
+        scraper.loadChapters(for: result) { [weak self] chapters in
+            guard let self = self else { return }
+            
+            DispatchQueue.main.async {
+                print("ChapterSearchController: Loaded \(chapters.count) chapters for result ID: \(result.id)")
+                self.loadedChapters[result.id] = chapters
+                
+                // Update the selected result with loaded chapters
+                if case .completed(let results, let selectedResult) = self.state,
+                   selectedResult.id == result.id {
+                    // Create a new result with loaded chapters
+                    let updatedResult = ChapterResult(
+                        title: selectedResult.title,
+                        duration: selectedResult.duration,
+                        id: selectedResult.id,
+                        confimations: selectedResult.confimations,
+                        chapters: chapters
+                    )
+                    self.state = .completed(results: results, selectedResult: updatedResult)
+                    self.chapterTable.reloadData()
+                }
+                
+                // Hide loading state
+                self.progressText.isHidden = true
+            }
+        }
     }
 
 }

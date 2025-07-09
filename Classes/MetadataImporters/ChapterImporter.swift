@@ -17,8 +17,17 @@ public enum ChapterSearch {
     public func search(completionHandler: @escaping ([ChapterResult]) -> Void) -> Runnable {
         switch self {
         case let .movieSeach(service, title, duration):
-            return RunnableTask(search: service.search(title: title, duration: duration),
-                                              completionHandler: completionHandler)
+            print("ChapterSearch: movieSeach called with title: '\(title)', duration: \(duration)")
+            let task = RunnableTask(search: {
+                print("ChapterSearch: About to call service.search")
+                let results = service.search(title: title, duration: duration)
+                print("ChapterSearch: service.search returned \(results.count) results")
+                return results
+            }, completionHandler: { results in
+                print("ChapterSearch: completionHandler called with \(results().count) results")
+                completionHandler(results())
+            })
+            return task
         }
     }
 }
